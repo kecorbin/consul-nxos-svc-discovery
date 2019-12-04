@@ -1,0 +1,81 @@
+version: '2.2'
+services:
+  # single consul server for demo purposes
+  consul-server:
+    hostname: consul-server
+    image: consul:1.6.0
+    command: ["consul","agent","-config-file=/config/consul-server.hcl"]
+    volumes:
+      - "./consul_config:/config"
+    environment:
+      # to keep things simple we will prevent registrator from registering every consul port as a service
+      - SERVICE_IGNORE=true
+    ports:
+      - 8500:8500
+      - 8600:8600/tcp
+      - 8600:8600/udp
+    networks:
+      dc1:
+        ipv4_address: 10.5.0.10
+    
+  # a simple web server
+  web:
+    scale: 2
+    image: nginx
+    ports:
+    - "80"
+    environment:
+      - SERVICE_NAME=web
+      - SERVICE_80_CHECK_TCP=true
+      - SERVICE_80_CHECK_INTERVAL=10s
+      - SERVICE_80_CHECK_TIMEOUT=3s
+
+    networks:
+      - dc1
+    restart: always
+    command: [nginx-debug, '-g', 'daemon off;']    
+  
+  # monitors a consul service and runs script whenever changes are detected
+  web_watch:
+    restart: always
+    build: ./n9k_update
+    environment:
+      - N9K_URL=https://sbx-nxos-mgmt.cisco.com
+      - N9K_USER=admin
+      - N9K_PASSWORD=Admin_1234!
+      - OBJECT_GROUP=web_servers
+      - CONSUL_HTTP_ADDR=http://10.5.0.10:8500
+      - SERVICE_8300_NAME=consul-watch
+      # to keep things simple we will prevent registrator from registering every consul port as a service
+      - SERVICE_8301_IGNORE=true
+      - SERVICE_8302_IGNORE=true
+      - SERVICE_8500_IGNORE=true
+      - SERVICE_8600_IGNORE=true
+    networks:
+      - dc1
+    command: |
+      watch
+        -type=service
+        -service=web
+        ./update.py
+
+  # regsitrator is used to sync containers with Consul service registry
+  registrator:
+    restart: always
+    image: gliderlabs/registrator:latest
+    command: "-internal consul://10.5.0.10:8500"
+    container_name: registrator
+    hostname: consul-server
+    depends_on:
+    - consul-server
+    volumes:
+    - /var/run/docker.sock:/tmp/docker.sock        
+    networks:
+      - dc1
+
+networks:
+  dc1:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.5.0.0/16
